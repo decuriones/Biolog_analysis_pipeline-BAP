@@ -72,12 +72,11 @@ def plot_growth_curves(db, db_pred, output_dir, measurements_type='absorbance'):
             os.makedirs(os.path.join(path_assay, ps), exist_ok=True)
 
             # simple plot of actual data
-            fig_actual_data, ax_actual_data= dp.data_plotting (db.loc[db['plate_serial'] == ps], measurements_type,'', filename=f'growth_curves_{ps}', type='line')
-            fig_actual_data.savefig(os.path.join(path_assay, ps, f'growth_curves_{ps}.png'), dpi=300, bbox_inches='tight')
+            dp.data_plotting (db.loc[db['plate_serial'] == ps], measurements_type,os.path.join(path_assay, ps), filename=f'growth_curves_{ps}', type='line')
 
             # plot of predicted data, with actual data in the background
             fig_pred, ax_pred = dp.data_plotting (db_pred.loc[db_pred['plate_serial'] == ps], measurements_type, os.path.join(path_assay, ps), filename=f'predicted_growth_curves_{ps}', type='line')
-            
+            fig_actual_data_scattered, ax_actual_data_scattered = dp.data_plotting (db.loc[db['plate_serial'] == ps], measurements_type,'', filename=f'growth_curves_{ps}', type='scatter')
 
 
             
