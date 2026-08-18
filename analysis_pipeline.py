@@ -14,6 +14,7 @@ from scipy.cluster.hierarchy import linkage, fcluster
 from sklearn.metrics import silhouette_score
 import seaborn as sns
 from sklearn.decomposition import PCA
+from sklearn.preprocessing import RobustScaler
 
 
 
@@ -34,7 +35,21 @@ import Growth_analysis as da
 
 # Importation from DB omnilog
 path_to_data = ""
-Data_collection = pa.read_csv(path_to_data)
+output_dir = "/home/elouanln/scratch/Sandbox/DB_omnilog/"
+analysis_dir = os.path.join(output_dir, "analysis_results")
+os.makedirs(analysis_dir, exist_ok=True)
+
+
+data_collection = pa.read_csv(path_to_data)
+
+### Data input to adapt analysis pipeline to the data structure
+# smoothing data
+moving_median = False
+FLOOR = 1e-5
+
+# setting the model type and the minimum number of points to be used for the fitting step
+model_type = "mech_baranyi"
+min_points = 10
 
 # initializing the list of rows, columns and measurements to be analyzed
 List_row = data_collection['Row_plate_name'].unique()
@@ -42,11 +57,11 @@ List_col = data_collection['Columns_plate_name'].unique()
 List_measurements = [measure for measure in data_collection.columns if 'measurement' in measure.lower() or 'absorbance' in measure.lower() or 'fluorescence' in measure.lower() or 'luminescence' in measure.lower()]
 
 # Extracting all assays (counting triplicates) and plates serial
-Plates_serial = Data_collection['plate_serial'].unique()
+plates_serial = data_collection['plate_serial'].unique()
 Assays = pa.Series(plates_serial).str.extract(r"^(?P<assay>.+)-\d+$")["assay"].unique()
 
 ### All preprocessing steps
-blanked_data = Data_collection.copy(deep=True)
+blanked_data = data_collection.copy(deep=True)
 #Sorting df for better handling of the data
 blanked_data.sort_values(['plate_serial', 'Row_plate_name', 'Columns_plate_name', 'Time'], inplace=True)
 
@@ -59,14 +74,14 @@ if mode == 'wells':
 elif mode == 'values':
     List_blank=[]
 
-for serial in Plates_serial:
+for serial in plates_serial:
     blanked_data[blanked_data['plate_serial'] == serial] = dp.data_blanking(blanked_data[blanked_data['plate_serial'] == serial], List_blank, mode=mode)
 
 # Note that later fit requires values striclty positive, so if blanking is done with initial values, the data will be shifted to be strictly positive
 blanked_data[blanked_data[List_measurements].lt(0).any(axis=1)] = 1/1000000000000000000
 
 ## Creating a columns for delta time between each measurement and the first measurement, which will be used for the calculation of the area under the curve (AUC) and the growth rate
-for serial in Plates_serial:
+for serial in plates_serial:
     # Converting the time set to datetime format and normalizing it to start at 0 for each well
     time_set = pa.to_datetime(blanked_data.loc[blanked_data['plate_serial'] == serial,'Time'])  # Converting the time set to datetime format
     time_set = (time_set - time_set.min()).dt.total_seconds()/3600/24  # Normalizing the time set to start at 0 for each well
@@ -74,12 +89,24 @@ for serial in Plates_serial:
 
 ## Note that this part is facultative as the reasoning introduce bias that can heavily affect the results of the analysis
 ## Smoothing step - data are noisy due to colonial phenotypes of cyanobacterial growth and cyanobacteria also seems to display a circadian rhythm in their growth, which can be seen in the growth curves. 
-# This circadian rhythm is not of interest for the analysis and can be smoothed out by applying a moving average to the data.
+# This circadian rhythm is not of interest for the analysis and can be smoothed out by applying a moving median locally to the data.
 prepared_data = blanked_data.copy(deep=True)
-################### Filtre Hampel à tenter !!!!
-if moving_average:
-    for serial in Plates_serial:
-            continue
+prepared_data[List_measurements] = prepared_data[List_measurements].clip(lower=FLOOR) # Thresholding minimum values to 1e-4 as the fitting step would reject completely too low points
+prepared_data.sort_values(['plate_serial', 'Row_plate_name', 'Columns_plate_name', 'Time'], inplace=True)
+
+
+# hampel filter set outliers to local median. Outlier are defined as k*MAD (median absolute deviation) away from the local median.
+def hampel(df, window=7, k=3.0):
+    med = df.rolling(window, center=True, min_periods=1).median()
+    dev = (df - med).abs()
+    mad = dev.rolling(window, center=True, min_periods=1).median()
+    sigma = 1.4826 * mad
+    return df.mask((sigma > 0) & (dev > k * sigma), med)
+
+if moving_median:
+    for serial in plates_serial:
+        for measurement in List_measurements:
+            prepared_data.loc[prepared_data['plate_serial'] == serial, measurement] = hampel(prepared_data.loc[prepared_data['plate_serial'] == serial, measurement], window=7, k=3.0)
 
 ### Analysis step
 
@@ -87,12 +114,8 @@ if moving_average:
 Analysis_output = pa.DataFrame()
 prediction_df = pa.DataFrame()
 
-# setting the model type and the minimum number of points to be used for the fitting step
-model_type = "mech_baranyi"
-min_points = 10
 
-
-for serial in Plates_serial:
+for serial in plates_serial:
     for row in List_row:
         for col in List_col:
             well_mask = (prepared_data['plate_serial'] == serial) & (prepared_data['Row_plate_name'] == row) & (prepared_data['Columns_plate_name'] == col)
@@ -148,22 +171,24 @@ for serial in Plates_serial:
                 print(Analysis_output.loc[(Analysis_output['plate_serial'] == serial) & (Analysis_output['Row_plate_name'] == row) & (Analysis_output['Columns_plate_name'] == col) & (Analysis_output['measurement'] == measurement), :])
 
                 # Creating a dataframe with the predicted values for each well and adding it to the final dataframe
-                pred,t_inflection = da.predicting_values(growth_parameters, fitting_statistics, time_set) # Note that it is advised to fit all data to a same model to extract h0, but due to strong heterogeneity in the data, choice is made to keep h0 associated to each well
+                pred, pred2plot, time_fit_plot = da.predicting_values(growth_parameters, time_set) # using growth curve existing function for prediction
                 if pred is None:
-                    print(f'Well {well} : No predicted values could be extracted')
+                    print(f'Well {row}{col} : No predicted values could be extracted')
                     continue
 
-                print(f'Well {well} : Inflection point : {t_inflection}')
-                # example of how to add the predicted values to the dataframe
-                prediction_df = pa.concat([prediction_df, pa.DataFrame({'Plate_name': serial, 'Row_plate_name': row, 'Columns_plate_name': col, f'Predicted_values_{measurement}': pred[:, 0], 'Time': pred[:, 1]})], ignore_index=True,axis=0)
+
+                # prediction df and plotting df
+                prediction_df = pa.concat([prediction_df, pa.DataFrame({'Plate_name': serial, 'Row_plate_name': row, 'Columns_plate_name': col, f'Predicted_values_{measurement}': pred, 'Time': time_set})], ignore_index=True,axis=0)
+                prediction_plot_df = pa.concat([prediction_plot_df, pa.DataFrame({'Plate_name': serial, 'Row_plate_name': row, 'Columns_plate_name': col, f'Predicted_values_2plot_{measurement}': pred2plot, 'Time_fit_plot': time_fit_plot})], ignore_index=True,axis=0)
 
                 ## Exploiting prediction to assess statistical significance of the fit
                 # simplification of variables for better readability
                 y = measurement_set
-                y_pred = pred[:, 0]
+                y_pred = pred
 
                 # F-test for the significance of the fit
                 n = len(y)
+                n_params = len(growth_parameters['params']-2) # substracting 1 for the intercept and 1 also for the model type parameter, which is not a parameter 
                 ss_null = np.sum((y - y.mean())**2)
                 ss_model = np.sum((y - y_pred)**2)
                 F = ((ss_null - ss_model) / (n_params - 1)) / (ss_model / (n - n_params))
@@ -177,26 +202,32 @@ for serial in Plates_serial:
 ## Creating a correlation matrix for the growth parameters and statistics using pearson and spearman correlation coefficients
 df_correlation_data = Analysis_output.copy(deep=True)
 df_correlation_data = df_correlation_data[['mu', 'K', 'N0', 'h0', 'fit_t_min', 'fit_t_max', 'max_od', 'mu_max', 'time_at_umax', 'od_at_umax', 'doubling_time', 'exp_phase_start', 'exp_phase_end']]
-df_correlation_pearson = df_correlation_data.corr(method='pearson', numeric_only=True)
-df_correlation_spearman = df_correlation_data.corr(method='spearman', numeric_only=True)
 
-## Plotting the correlation matrices
-pearson = sns.heatmap(df_correlation_pearson,
-            annot=True, fmt='.2f', cmap='vlag', center=0,
-            vmin=-1, vmax=1, square=True)
-pearson.savefig('correlation_matrix_pearson.png', dpi=300, bbox_inches='tight')
 
-spearman = sns.heatmap(df_correlation_spearman,
-            annot=True, fmt='.2f', cmap='vlag', center=0,
-            vmin=-1, vmax=1, square=True)
-spearman.savefig('correlation_matrix_spearman.png', dpi=300, bbox_inches='tight')
+## Plotting the correlation matrices !!!! à déplacer dans le fichier dédié au plottttttt
+for method in ('pearson', 'spearman'):
+    corr = df_correlation_data.corr(method=method, numeric_only=True)
+    fig, ax = plt.subplots(figsize=(10, 8))          # nouvelle figure à chaque fois
+    sns.heatmap(corr, mask=np.triu(np.ones_like(corr, dtype=bool)),
+                annot=True, fmt='.2f', cmap='vlag', center=0,
+                vmin=-1, vmax=1, square=True, ax=ax)
+    ax.set_title(f'Corrélation {method}')
+    fig.savefig(os.path.join(FIG_DIR, f'correlation_matrix_{method}.png'),
+                dpi=300, bbox_inches='tight')
+    plt.close(fig)  
 
 ## Managing parameters too correlated for the next dimensionality reduction step
 List_correlated_parameters = []
 List_correlated_parameters_log = []
 
-features = [feat for feature in blanked_data.columns if feature not in List_correlated_parameters and feature not in List_correlated_parameters_log]
+features = [feat for feat in Analysis_output.columns if feature not in List_correlated_parameters and feature not in List_correlated_parameters_log]
 # note that feature log should be logged not simply removed, I am just to tired for now ...
+df_feat = Analysis_output[features].copy(deep=True)
+df_feat = df_feat.dropna()
+
+# Dealing with replicates by taking median values for each condition 
+mat = (df_feat.groupby(['strain', 'substrate'])[features]
+              .median().reset_index())
 
 ## Dimensionality reduction step using PCA to reduce the number of parameters to be used for clustering
 
@@ -223,24 +254,23 @@ fig.savefig('pca.png', dpi=300, bbox_inches='tight')
 plt.close(fig)
 
 ## Clustering of the wells based on their growth parameters
-df_clutering = Analysis_output.copy(deep=True)
-df_clutering = df_clutering.dropna(subset=['mu', 'K', 'N0', 'h0', 'fit_t_min', 'fit_t_max', 'max_od', 'mu_max', 'time_at_umax', 'od_at_umax', 'doubling_time', 'exp_phase_start', 'exp_phase_end'],inplace=True)
-df_clutering = df_clutering[['mu', 'K', 'N0', 'h0', 'fit_t_min', 'fit_t_max', 'max_od', 'mu_max', 'time_at_umax', 'od_at_umax', 'doubling_time', 'exp_phase_start', 'exp_phase_end']]
-df_labeling = Analysis_output.copy(deep=True)
+df_clustering = Analysis_output.copy(deep=True)
+df_clustering = df_clustering.dropna(subset=['mu', 'K', 'N0', 'h0', 'fit_t_min', 'fit_t_max', 'max_od', 'mu_max', 'time_at_umax', 'od_at_umax', 'doubling_time', 'exp_phase_start', 'exp_phase_end'],inplace=True)
+# Keeping indexes aligned
+df_labeling = df_clustering.copy(deep=True)
+
+df_clustering = df_clustering[['mu', 'K', 'N0', 'h0', 'fit_t_min', 'fit_t_max', 'max_od', 'mu_max', 'time_at_umax', 'od_at_umax', 'doubling_time', 'exp_phase_start', 'exp_phase_end']]
 df_labeling = df_labeling[['plate_serial', 'Row_plate_name', 'Columns_plate_name', 'measurement']]
 
 # Clustering using HDBSCAN 
 hdb = HDBSCAN(copy=True, min_cluster_size=5)
-hdb.fit_predict (df_clutering.values)
+hdb.fit_predict (df_clustering.values)
 
 # Recording the cluster labels in the original dataframe
 df_labeling['cluster_HDBSCAN'] = hdb.labels_
 
 # Clustering using linkage
 results = []
-
-mat = (df_feat.groupby(['strain', 'substrate'])[features]
-              .median().reset_index())
 
 for strain, sub in mat.groupby('strain'):
     sub = sub.copy()
@@ -250,13 +280,41 @@ for strain, sub in mat.groupby('strain'):
     k_opt = max(sils, key=sils.get)
     sub['cluster'] = fcluster(Z, k_opt, 'maxclust')
     sub['silhouette'] = sils[k_opt]
-    resultats.append(sub)
+    results.append(sub)
     pic = sns.clustermap(pa.DataFrame(Xs, columns=features, index=sub['substrate']),
                    row_linkage=Z, cmap='vlag')
-    pic.savefig(f'clustermap_{strain}.png', dpi=300, bbox_inches='tight')
+    pic.savefig(f'os.path.join(analysis_dir, f"clustermap_{strain}.png")', dpi=300, bbox_inches='tight')
     plt.close(pic.figure)
 
     
-clusters_df = pa.concat(resultats, ignore_index=True)
+clusters_linkage_df = pa.concat(results, ignore_index=True)
+
+### Saving all analysis results to csv files for further analysis and visualization
+
+# saving blanked data
+blanked_data.to_csv(os.path.join(analysis_dir, 'blanked_data.csv'), index=False)
+
+# saving preprocessed data
+prepared_data.to_csv(os.path.join(analysis_dir, 'preprocessed_data.csv'), index=False)
+
+# saving analysis df
+Analysis_output.to_csv(os.path.join(analysis_dir, 'growth_parameters.csv'), index=False)
+
+# saving correlation matrices
+df_correlation_data.to_csv(os.path.join(analysis_dir, 'correlation_matrices_pre-corr.csv'), index=False)
+
+# saving predicted values for each well
+prediction_df.to_csv(os.path.join(analysis_dir, 'predicted_values.csv'), index=False)
+prediction_plot_df.to_csv(os.path.join(analysis_dir, 'predicted_values_2plot.csv'), index=False)
+
+# dimensionality reduction
+df_pca.to_csv(os.path.join(analysis_dir, 'pca_results.csv'), index=False)
+
+# clustering
+clusters_linkage_df.to_csv(os.path.join(analysis_dir, 'clusters_linkage.csv'), index=False)
+df_labeling.to_csv(os.path.join(analysis_dir, 'clusters_HDBSCAN.csv'), index=False)
+
+
+
 
 

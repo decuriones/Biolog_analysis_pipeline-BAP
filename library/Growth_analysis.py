@@ -5,7 +5,6 @@ import numpy as np
 import sklearn as sk
 import statsmodels.api as sm
 import growthcurves as gc
-import Growth_functions as gf
 
 
 ### Further analysis: What are the growth parameters (maximal growth rate, time to reach plateau, maximal value reached) for each condition 
@@ -22,32 +21,20 @@ def model_fitting(measurement_set, time_set, model_type, min_points=10):
     return function_fit, stat_fit_summary
 
 # Creating array to plot the function fit and the data points
-def predicting_values(function_fit,stat_function, time_set):
-    if function_fit is None:
+def predicting_values(function_fit_params, time_set):
+    if function_fit_params is None:
         return None,None 
-    function_type = function_fit['model_type']
-    # Creating an array of time values, the unit is day (0.5 day = 12 h...)
-    time_fit = np.linspace(time_set.min(), time_set.max(), 100)
-    K = function_fit['params']['K'] 
-    mu = function_fit['params']['mu']
-    N0 = function_fit['params']['N0']
-    if function_type == "mech_baranyi":
-        lag = function_fit['params']['h0']/mu
-    else:
-        lag = stat_function['params']['exp_phase_start']-stat_function['params']['fit_t_min']
+    function_type = function_fit_params['model_type']
 
-    if function_fit is not None:
-        if "logistic" in function_type:
-            fit_values = gf.logistic_growth(time_fit, N0, K, mu, lag)
-        elif "gompertz" in function_type:
-            fit_values = gf.gompertz_growth(time_fit, N0, K, mu, lag)
-        elif "richards" in function_type:
-            fit_values = gf.richards_growth(time_fit, N0, K, mu, lag)
-        elif "baranyi" in function_type:
-            fit_values = gf.baranyi_growth(time_fit, N0, K, mu, lag)
-        else:
-            raise ValueError(f"Model type '{function_type}' not recognized.")
-    return(np.column_stack((fit_values[0].T, time_fit.T)),fit_values[1])
+    # Creating an array of time values, the unit is day (0.5 day = 12 h...)
+    time_fit_plot = np.linspace(time_set.min(), time_set.max(), 100)
+
+    if function_fit_params is not None and function_type in ['mech_logistic', 'mech_gompertz', 'mech_richards', 'mech_baranyi']:
+        Predicted_values = gc.models.evaluate_parametric_model(time_set, function_type, function_fit_params['params'])
+        Predicted_values_2plot = gc.models.evaluate_parametric_model(time_fit_plot, function_type, function_fit_params['params'])
+    else:
+        raise ValueError(f"Model type '{function_type}' not recognized OR function_fit_params is None. Please provide a valid model type and parameters.")
+    return(Predicted_values, Predicted_values_2plot, time_fit_plot)
 
 
 # Normalizing fluorescence and DO signals values to perform statistical analysis on their behavior (calculation : xnorm = xval/xmax for each well, to keep the same variance and curvatures)
