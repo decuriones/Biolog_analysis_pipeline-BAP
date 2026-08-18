@@ -12,6 +12,7 @@ from statsmodels.stats.runs import runstest_1samp
 from sklearn.cluster import HDBSCAN
 from scipy.cluster.hierarchy import linkage, fcluster
 from sklearn.metrics import silhouette_score
+from sklearn.metrics import adjusted_rand_score
 import seaborn as sns
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import RobustScaler
@@ -77,9 +78,6 @@ elif mode == 'values':
 for serial in plates_serial:
     blanked_data[blanked_data['plate_serial'] == serial] = dp.data_blanking(blanked_data[blanked_data['plate_serial'] == serial], List_blank, mode=mode)
 
-# Note that later fit requires values striclty positive, so if blanking is done with initial values, the data will be shifted to be strictly positive
-blanked_data[blanked_data[List_measurements].lt(0).any(axis=1)] = 1/1000000000000000000
-
 ## Creating a columns for delta time between each measurement and the first measurement, which will be used for the calculation of the area under the curve (AUC) and the growth rate
 for serial in plates_serial:
     # Converting the time set to datetime format and normalizing it to start at 0 for each well
@@ -105,14 +103,18 @@ def hampel(df, window=7, k=3.0):
 
 if moving_median:
     for serial in plates_serial:
-        for measurement in List_measurements:
-            prepared_data.loc[prepared_data['plate_serial'] == serial, measurement] = hampel(prepared_data.loc[prepared_data['plate_serial'] == serial, measurement], window=7, k=3.0)
+        for row in List_row:
+            for col in List_col:
+                well_mask = (prepared_data['plate_serial'] == serial) & (prepared_data['Row_plate_name'] == row) & (prepared_data['Columns_plate_name'] == col)
+                for measurement in List_measurements:
+                    prepared_data.loc[well_mask, measurement] = hampel(prepared_data.loc[well_mask, measurement], window=7, k=3.0)
 
 ### Analysis step
 
 # initializing the dataframe to collect all growth parameters for desired wells and the dataframe to collect the predicted values for each well
 Analysis_output = pa.DataFrame()
 prediction_df = pa.DataFrame()
+prediction_plot_df = pa.DataFrame()
 
 
 for serial in plates_serial:
@@ -126,6 +128,8 @@ for serial in plates_serial:
                 continue
             strain = well_data_for_fit['strain'].values[0]
             substrate = well_data_for_fit['substrate'].values[0]
+            element = well_data_for_fit['Element'].values[0]
+
             for measurement in List_measurements:
                 
                 ## Area under the curve (AUC) calculation
@@ -161,7 +165,7 @@ for serial in plates_serial:
                 exp_phase_end = fitting_statistics['exp_phase_end']
                 model_rmse = fitting_statistics['model_rmse']
 
-                Analysis_output = pa.concat([Analysis_output, pa.DataFrame({'plate_serial': [serial], 'Row_plate_name': [row], 'Columns_plate_name': [col], 'measurement': [measurement], 'strain': [strain], 'substrate': [substrate], 
+                Analysis_output = pa.concat([Analysis_output, pa.DataFrame({'plate_serial': [serial], 'Row_plate_name': [row], 'Columns_plate_name': [col], 'measurement': [measurement], 'strain': [strain], 'substrate': [substrate], 'Element': [element], 
                 'mu': [mu], 'K': [k], 'N0': [N0], 'h0': [h0], 'fit_t_min': [t_min], 'fit_t_max': [t_max], 'model_type': [model_type], 
                 'max_od': [max_od], 'mu_max': [mu_max], 'time_at_umax': [t_mumax], 'od_at_umax': [od_at_umax], 'doubling_time': [doubling_time], 
                 'exp_phase_start': [exp_phase_start], 'exp_phase_end': [exp_phase_end], 'model_rmse': [model_rmse], 'AUC': [AUC]})], ignore_index=True)
@@ -178,8 +182,8 @@ for serial in plates_serial:
 
 
                 # prediction df and plotting df
-                prediction_df = pa.concat([prediction_df, pa.DataFrame({'Plate_name': serial, 'Row_plate_name': row, 'Columns_plate_name': col, f'Predicted_values_{measurement}': pred, 'Time': time_set})], ignore_index=True,axis=0)
-                prediction_plot_df = pa.concat([prediction_plot_df, pa.DataFrame({'Plate_name': serial, 'Row_plate_name': row, 'Columns_plate_name': col, f'Predicted_values_2plot_{measurement}': pred2plot, 'Time_fit_plot': time_fit_plot})], ignore_index=True,axis=0)
+                prediction_df = pa.concat([prediction_df, pa.DataFrame({'Plate_name': serial, 'Row_plate_name': row, 'Columns_plate_name': col, 'Measurement': measurement, 'Prediction': pred, 'Time': time_set})], ignore_index=True,axis=0)
+                prediction_plot_df = pa.concat([prediction_plot_df, pa.DataFrame({'Plate_name': serial, 'Row_plate_name': row, 'Columns_plate_name': col, 'Measurement': measurement,'Prediction_2plot': pred2plot, 'Time_fit_plot': time_fit_plot})], ignore_index=True,axis=0)
 
                 ## Exploiting prediction to assess statistical significance of the fit
                 # simplification of variables for better readability
@@ -188,23 +192,29 @@ for serial in plates_serial:
 
                 # F-test for the significance of the fit
                 n = len(y)
-                n_params = len(growth_parameters['params']-2) # substracting 1 for the intercept and 1 also for the model type parameter, which is not a parameter 
+                n_params = len(growth_parameters['params'])-2 # substracting 1 for the intercept and 1 also for the model type parameter, which is not a parameter 
                 ss_null = np.sum((y - y.mean())**2)
                 ss_model = np.sum((y - y_pred)**2)
                 F = ((ss_null - ss_model) / (n_params - 1)) / (ss_model / (n - n_params))
                 p = st.f.sf(F, n_params - 1, n - n_params)
 
                 # Runs test for randomness of residuals
-                z, pz = runstest_1samp(y - y_pred, cutoff=0)
+                try:
+                    z, pz = runstest_1samp(y - y_pred, cutoff=0)
+                except:
+                    z, pz = np.nan, np.nan
 
-                Analysis_output.loc[(Analysis_output['plate_serial'] == serial) & (Analysis_output['Row_plate_name'] == row) & (Analysis_output['Columns_plate_name'] == col) & (Analysis_output['measurement'] == measurement), 'F_test_pvalue', 'Residual_randomness', 'Residual_randomness_pvalue'] = p,z,pz
-        
+                Analysis_output.loc[(Analysis_output['plate_serial'] == serial) & (Analysis_output['Row_plate_name'] == row) & (Analysis_output['Columns_plate_name'] == col) & (Analysis_output['measurement'] == measurement), ['F_test_pvalue', 'Residual_randomness', 'Residual_randomness_pvalue']] = p,z,pz
+
+### Processing the analysis results to relate them to the baseline
+
+## If log is applied to some of parameters, it should be done before the normalization step to avoid negative values 
 ## Creating a correlation matrix for the growth parameters and statistics using pearson and spearman correlation coefficients
 df_correlation_data = Analysis_output.copy(deep=True)
 df_correlation_data = df_correlation_data[['mu', 'K', 'N0', 'h0', 'fit_t_min', 'fit_t_max', 'max_od', 'mu_max', 'time_at_umax', 'od_at_umax', 'doubling_time', 'exp_phase_start', 'exp_phase_end']]
 
 
-## Plotting the correlation matrices !!!! à déplacer dans le fichier dédié au plottttttt
+## Plotting the correlation matrices !!!! à déplacer dans le fichier dédié au plottttttt ## A ne pas prendre en compte pour la correction
 for method in ('pearson', 'spearman'):
     corr = df_correlation_data.corr(method=method, numeric_only=True)
     fig, ax = plt.subplots(figsize=(10, 8))          # nouvelle figure à chaque fois
@@ -215,19 +225,47 @@ for method in ('pearson', 'spearman'):
     fig.savefig(os.path.join(FIG_DIR, f'correlation_matrix_{method}.png'),
                 dpi=300, bbox_inches='tight')
     plt.close(fig)  
-
+    
 ## Managing parameters too correlated for the next dimensionality reduction step
 List_correlated_parameters = []
 List_correlated_parameters_log = []
 
-features = [feat for feat in Analysis_output.columns if feature not in List_correlated_parameters and feature not in List_correlated_parameters_log]
+features = [feat for feat in Analysis_output.columns if feat not in List_correlated_parameters]
+
+# Logging features that should be logged
+Analysis_output_log = Analysis_output.copy(deep=True)
+Analysis_output_log = Analysis_output_log.to_numeric(errors='coerce')  # Convert all columns to numeric, setting non-convertible values to NaN
+Analysis_output_log = Analysis_output_log.dropna(subset=features)
+Analysis_output_log[features] = np.log(Analysis_output_log[features])
+
 # note that feature log should be logged not simply removed, I am just to tired for now ...
-df_feat = Analysis_output[features].copy(deep=True)
+
+# normalizing the growth parameters to be able to compare them between each other and to perform dimensionality reduction and clustering
+Normalized_analysis_output = Analysis_output.copy(deep=True)
+
+def normalize_group(group):
+    List_params = ['mu', 'K', 'N0', 'h0', 'fit_t_min', 'fit_t_max', 'max_od', 'mu_max', 'time_at_umax', 'od_at_umax', 'doubling_time', 'exp_phase_start', 'exp_phase_end','AUC']
+    baselines = group.loc[group['substrate'].str.lower() == 'negative_control',List_params]
+
+    if baselines.empty: # if there is no baseline, then we cannot normalize the group, so we return the group with NaN values for the normalized parameters
+        group[List_params] = np.nan
+        return group
+    baseline = baselines.iloc[0]   # avoiding issues with multiple baselines, we take the first one
+    for c in List_params:
+        group[c] = group[c] - baseline[c]
+    return group
+
+Normalized_analysis_output = (Analysis_output
+    .groupby(['plate_serial', 'measurement', 'Element'], group_keys=False)
+    .apply(normalize_group))
+
+# Selecting the features to be used for the subsequent analysis
+df_feat = Normalized_analysis_output[features].copy(deep=True)
 df_feat = df_feat.dropna()
 
 # Dealing with replicates by taking median values for each condition 
-mat = (df_feat.groupby(['strain', 'substrate'])[features]
-              .median().reset_index())
+mat = (df_feat.groupby(['strain', 'Element', 'substrate'])[features]
+              .median(numeric_only=True).reset_index())
 
 ## Dimensionality reduction step using PCA to reduce the number of parameters to be used for clustering
 
@@ -254,36 +292,53 @@ fig.savefig('pca.png', dpi=300, bbox_inches='tight')
 plt.close(fig)
 
 ## Clustering of the wells based on their growth parameters
-df_clustering = Analysis_output.copy(deep=True)
-df_clustering = df_clustering.dropna(subset=['mu', 'K', 'N0', 'h0', 'fit_t_min', 'fit_t_max', 'max_od', 'mu_max', 'time_at_umax', 'od_at_umax', 'doubling_time', 'exp_phase_start', 'exp_phase_end'],inplace=True)
+df_clustering = Normalized_analysis_output.copy(deep=True)
+df_clustering.dropna(subset=['mu', 'K', 'N0', 'h0', 'fit_t_min', 'fit_t_max', 'max_od', 'mu_max', 'time_at_umax', 'od_at_umax', 'doubling_time', 'exp_phase_start', 'exp_phase_end'],inplace=True)
 # Keeping indexes aligned
-df_labeling = df_clustering.copy(deep=True)
+df_labeling = df_clustering[['plate_serial', 'Row_plate_name', 'Columns_plate_name',
+                       'measurement', 'strain', 'substrate', 'Element']].copy(deep=True)
 
 df_clustering = df_clustering[['mu', 'K', 'N0', 'h0', 'fit_t_min', 'fit_t_max', 'max_od', 'mu_max', 'time_at_umax', 'od_at_umax', 'doubling_time', 'exp_phase_start', 'exp_phase_end']]
-df_labeling = df_labeling[['plate_serial', 'Row_plate_name', 'Columns_plate_name', 'measurement']]
+df_clustering_scaled = RobustScaler().fit_transform(df_clustering.values)
 
 # Clustering using HDBSCAN 
 hdb = HDBSCAN(copy=True, min_cluster_size=5)
-hdb.fit_predict (df_clustering.values)
+hdb.fit_predict (df_clustering_scaled)
 
 # Recording the cluster labels in the original dataframe
 df_labeling['cluster_HDBSCAN'] = hdb.labels_
+n_noise = (df_labeling['cluster_HDBSCAN'] == -1).sum()
+
+# printing the number of noise points and the number of unique clusters found
+print(f"Number of noise points: {n_noise} ({n_noise / len(df_labeling) * 100:.2f}%) over {len(df_labeling)} points")
+print(f"Number of unique clusters found: {df_labeling['cluster_HDBSCAN'].nunique()}")
+
 
 # Clustering using linkage
 results = []
 
 for strain, sub in mat.groupby('strain'):
-    sub = sub.copy()
+    sub = sub.dropna(subset=features).copy()
     Xs = RobustScaler().fit_transform(sub[features])
     Z = linkage(Xs, method='ward')
     sils = {k: silhouette_score(Xs, fcluster(Z, k, 'maxclust')) for k in range(2, 9)}
     k_opt = max(sils, key=sils.get)
     sub['cluster'] = fcluster(Z, k_opt, 'maxclust')
     sub['silhouette'] = sils[k_opt]
+
+    # Comparing the 2 clustering methods by adding the HDBSCAN labels to the linkage clustering results
+    hdb_labels = HDBSCAN(min_cluster_size=5).fit_predict(Xs)
+    kernels = hdb_labels != -1 # clusters that are not noise
+    if kernels.sum() > 1:
+        ari = adjusted_rand_score(sub.loc[kernels, 'cluster'], hdb_labels[kernels])
+        print(f'  ARI Ward vs HDBSCAN = {ari:.2f} '
+              f'({(~kernels).sum()} substrates labeled as noise by HDBSCAN)')
+
+    lab = sub['substrate'] + '_' + sub['Element']
     results.append(sub)
-    pic = sns.clustermap(pa.DataFrame(Xs, columns=features, index=sub['substrate']),
-                   row_linkage=Z, cmap='vlag')
-    pic.savefig(f'os.path.join(analysis_dir, f"clustermap_{strain}.png")', dpi=300, bbox_inches='tight')
+    pic = sns.clustermap(pa.DataFrame(Xs, columns=features, index=lab), row_linkage=Z, col_cluster=False, cmap='vlag', center=0,
+                         figsize=(6, max(8, 0.22 * len(sub))), yticklabels=True)
+    pic.savefig(os.path.join(analysis_dir, f"clustermap_{strain}.png"), dpi=300, bbox_inches='tight')
     plt.close(pic.figure)
 
     
@@ -299,6 +354,9 @@ prepared_data.to_csv(os.path.join(analysis_dir, 'preprocessed_data.csv'), index=
 
 # saving analysis df
 Analysis_output.to_csv(os.path.join(analysis_dir, 'growth_parameters.csv'), index=False)
+
+# saving normalized analysis df
+Normalized_analysis_output.to_csv(os.path.join(analysis_dir, 'normalized_growth_parameters.csv'), index=False)
 
 # saving correlation matrices
 df_correlation_data.to_csv(os.path.join(analysis_dir, 'correlation_matrices_pre-corr.csv'), index=False)
