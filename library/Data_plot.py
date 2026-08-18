@@ -226,7 +226,7 @@ def data_blanking(data_set, blank_wells, mode='wells'):
 
 ### Plotting every relevant wells given value according to time
 
-def data_plotting(data_set, measurements_type, save_path,filename='Omnilog_data'):
+def data_plotting(data_set, measurements_type, save_path,filename='Omnilog_data', type='line'):
     
     ### Extracting columns corresponding to measurement type wanted
     measure_col = [col for col in data_set.columns if measurements_type in col]
@@ -279,16 +279,26 @@ def data_plotting(data_set, measurements_type, save_path,filename='Omnilog_data'
 
             # Actual plotting of the values according to time for each measurement type wanted in the corresponding subplot
             for measure in measure_col:
-                sns.lineplot(data=data_set.loc[(data_set['Row_plate_name']==line) & (data_set['Columns_plate_name']==col), :],
-                              x='Time', y=measure,
-                              label=measure,
-                              ax=current_ax,
-                              color=color_map[measure],
-                              linewidth=2,
-                              marker='o',
-                              markersize=4,
-                              alpha=0.8,
-                              legend=False)
+                if type == 'line':
+                    sns.lineplot(data=data_set.loc[(data_set['Row_plate_name']==line) & (data_set['Columns_plate_name']==col), :],
+                                x='Time', y=measure,
+                                label=measure,
+                                ax=current_ax,
+                                color=color_map[measure],
+                                linewidth=2,
+                                marker='o',
+                                markersize=4,
+                                alpha=0.8,
+                                legend=False)
+                elif type == 'scatter':
+                    sns.scatterplot(data=data_set.loc[(data_set['Row_plate_name']==line) & (data_set['Columns_plate_name']==col), :],
+                                    x='Time', y=measure,
+                                    label=measure,
+                                    ax=current_ax,
+                                    color=color_map[measure],
+                                    s=30,
+                                    alpha=0.8,
+                                    legend=False)
 
             # ============ SUBPLOT STYLING ============
             # Title with well ID
@@ -335,12 +345,12 @@ def data_plotting(data_set, measurements_type, save_path,filename='Omnilog_data'
             spine.set_linewidth(1.5)
             spine.set_visible(True)
     
-    # Show the figure
-    plt.show()
         
     # Saving figure in the corresponding folder
     if save_path:
         plt.savefig(f'{save_path}/{filename}_{measurements_type}_plot.png')
+    else:
+        return fig, ax  # Return the figure and axes for further manipulation if needed
     
 
 

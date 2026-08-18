@@ -213,19 +213,7 @@ for serial in plates_serial:
 df_correlation_data = Analysis_output.copy(deep=True)
 df_correlation_data = df_correlation_data[['mu', 'K', 'N0', 'h0', 'fit_t_min', 'fit_t_max', 'max_od', 'mu_max', 'time_at_umax', 'od_at_umax', 'doubling_time', 'exp_phase_start', 'exp_phase_end']]
 
-
-## Plotting the correlation matrices !!!! à déplacer dans le fichier dédié au plottttttt ## A ne pas prendre en compte pour la correction
-for method in ('pearson', 'spearman'):
-    corr = df_correlation_data.corr(method=method, numeric_only=True)
-    fig, ax = plt.subplots(figsize=(10, 8))          # nouvelle figure à chaque fois
-    sns.heatmap(corr, mask=np.triu(np.ones_like(corr, dtype=bool)),
-                annot=True, fmt='.2f', cmap='vlag', center=0,
-                vmin=-1, vmax=1, square=True, ax=ax)
-    ax.set_title(f'Corrélation {method}')
-    fig.savefig(os.path.join(FIG_DIR, f'correlation_matrix_{method}.png'),
-                dpi=300, bbox_inches='tight')
-    plt.close(fig)  
-    
+  
 ## Managing parameters too correlated for the next dimensionality reduction step
 List_correlated_parameters = []
 List_correlated_parameters_log = []
@@ -279,17 +267,6 @@ loadings = pa.DataFrame(pca.components_[:2].T, columns=['PC1', 'PC2'], index=fea
 # Printing the explained variance ratio and the loadings for the first two principal components, ULTRA important for interpretation and qc
 print(pca.explained_variance_ratio_.round(3))
 print(loadings.round(2))
-
-## The plot should be relocated in a py file dedicated to plotting for better readability and modularity of the code
-df_pca = mat.loc[X.index].copy()
-df_pca['PC1'], df_pca['PC2'] = scores[:, 0], scores[:, 1]
-
-fig, ax = plt.subplots(figsize=(7, 6))
-sns.scatterplot(data=df_pca, x='PC1', y='PC2', hue='strain', s=60, ax=ax)
-ax.set_xlabel(f'PC1 ({pca.explained_variance_ratio_[0]:.0%})')
-ax.set_ylabel(f'PC2 ({pca.explained_variance_ratio_[1]:.0%})')
-fig.savefig('pca.png', dpi=300, bbox_inches='tight')
-plt.close(fig)
 
 ## Clustering of the wells based on their growth parameters
 df_clustering = Normalized_analysis_output.copy(deep=True)
