@@ -226,23 +226,31 @@ def data_blanking(data_set, blank_wells, mode='wells'):
 
 ### Plotting every relevant wells given value according to time
 
-def data_plotting(data_set, measurements_type, save_path,filename='Omnilog_data', type='line'):
+def data_plotting(data_set, measurements_type, save_path, filename='Omnilog_data',
+                                    type='line', ax=None, value_col=None, x_col='delta_time',
+                                    style_axes=True, color=None, label=None, zorder=2):
     
-    ### Extracting columns corresponding to measurement type wanted
-    measure_col = [col for col in data_set.columns if measurements_type in col]
-    ### Converting Time column to datetime for proper plotting
-    data_set['Time'] = pa.to_datetime(data_set['Time'], errors='coerce')
-    data_set.dropna(subset=['Time'], inplace=True, axis=0)
+    data_set = data_set.copy()
+ 
+    # Extracting columns corresponding to measurement type wanted
+    if value_col is not None:
+        measure_col = [value_col]
+    else:
+        measure_col = [c for c in data_set.columns if measurements_type in c]
+    if not measure_col:
+        raise ValueError(f"No columns found for measurement type '{measurements_type}' in the dataset.")
+
 
     
     ### Sorting dataset according to plate plan and time
-    data_set.sort_values(by=['Row_plate_name', 'Columns_plate_name', 'Time'], inplace=True)
+    data_set.sort_values(by=['Row_plate_name', 'Columns_plate_name', x_col],
+                         inplace=True)
 
     ### Plotting every relevant wells given measurement type wanted, according to time in a multi-plot figure
     
     # Extracting wells names for plotting
-    wells_line = data_set['Row_plate_name'].unique().tolist()
-    wells_col = data_set['Columns_plate_name'].unique().tolist()
+    wells_line = sorted(data_set['Row_plate_name'].unique().tolist())
+    wells_col = sorted(data_set['Columns_plate_name'].unique().tolist())
 
     ## Plot management 
     n_rows, n_cols = len(wells_line), len(wells_col)
@@ -254,103 +262,117 @@ def data_plotting(data_set, measurements_type, save_path,filename='Omnilog_data'
     figsize = (n_cols * subplot_width, n_rows * subplot_height)
 
     # Define colors for different measurements
-    colors = sns.color_palette("husl", len(measure_col))
-    color_map = {measure: colors[i] for i, measure in enumerate(measure_col)}
+    if color is None:
+        palette = sns.color_palette("husl", len(measure_col))
+        color_map = {m: palette[i] for i, m in enumerate(measure_col)}
+    else:
+        color_map = {m: color for m in measure_col}
+ 
 
     # Creating multi-plot figure with subplots corresponding to each well and plotting the corresponding values according to time for each measurement type wanted
-    fig, ax = plt.subplots(nrows=n_rows, ncols=n_cols, figsize=figsize)
+    if ax is None:
+        fig, ax = plt.subplots(nrows=n_rows, ncols=n_cols,
+                               figsize=figsize)
+    else:
+        fig = ax.flat[0].get_figure()
+    
     print(measure_col)
     for row_idx, line in enumerate(wells_line):
         for col_idx, col in enumerate(wells_col):
             current_ax = ax[row_idx, col_idx]
             # Empty wells are just ignored and replaced by "Empty" mention
-            if data_set.loc[(data_set['Row_plate_name']==line) & (data_set['Columns_plate_name']==col), measure_col].isna().all().all() or len(data_set.loc[(data_set['Row_plate_name']==line) & (data_set['Columns_plate_name']==col)])==0:
-                print(f'Well {line} {col} is empty, deleting corresponding subplot')
-                current_ax.text(0.5, 0.5, 'Empty', 
-                               ha='center', va='center', 
-                               fontsize=10, color='gray', alpha=0.5)
-                current_ax.set_xticks([])
-                current_ax.set_yticks([])
-                current_ax.spines['top'].set_visible(False)
-                current_ax.spines['right'].set_visible(False)
-                current_ax.spines['left'].set_visible(False)
-                current_ax.spines['bottom'].set_visible(False)
+            well = data_set.loc[(data_set['Row_plate_name'] == line)
+                                & (data_set['Columns_plate_name'] == col)]
+            if well[measure_col].isna().all().all() or len(well)==0:
+                if style_axes:
+                    print(f'Well {line} {col} is empty, deleting corresponding subplot')
+                    current_ax.text(0.5, 0.5, 'Empty', 
+                                ha='center', va='center', 
+                                fontsize=10, color='gray', alpha=0.5)
+                    current_ax.set_xticks([])
+                    current_ax.set_yticks([])
+                    current_ax.spines['top'].set_visible(False)
+                    current_ax.spines['right'].set_visible(False)
+                    current_ax.spines['left'].set_visible(False)
+                    current_ax.spines['bottom'].set_visible(False)
                 continue
 
             # Actual plotting of the values according to time for each measurement type wanted in the corresponding subplot
             for measure in measure_col:
                 if type == 'line':
-                    sns.lineplot(data=data_set.loc[(data_set['Row_plate_name']==line) & (data_set['Columns_plate_name']==col), :],
-                                x='Time', y=measure,
-                                label=measure,
+                    sns.lineplot(data=well,
+                                x=x_col, y=measure,
+                                label=label if label is not None else measure,
                                 ax=current_ax,
                                 color=color_map[measure],
                                 linewidth=2,
                                 marker='o',
                                 markersize=4,
                                 alpha=0.8,
-                                legend=False)
+                                legend=False,
+                                zorder=zorder,
+                                squeeze=False)
                 elif type == 'scatter':
-                    sns.scatterplot(data=data_set.loc[(data_set['Row_plate_name']==line) & (data_set['Columns_plate_name']==col), :],
-                                    x='Time', y=measure,
-                                    label=measure,
+                    sns.scatterplot(data=well,
+                                    x=x_col, y=measure,
+                                    label=label if label is not None else measure,
                                     ax=current_ax,
                                     color=color_map[measure],
                                     s=30,
                                     alpha=0.8,
-                                    legend=False)
+                                    legend=False, 
+                                    zorder=zorder,
+                                    squeeze=False)
+                if style_axes:
+                    # ============ SUBPLOT STYLING ============
+                    # Title with well ID
+                    current_ax.set_title(f'{line}{col}', fontsize=11, fontweight='bold', pad=10)
+                    current_ax.set_xlabel('jours', fontsize=8)
 
-            # ============ SUBPLOT STYLING ============
-            # Title with well ID
-            current_ax.set_title(f'{line}{col}', fontsize=11, fontweight='bold', pad=10)
-            
-            # X-axis formatting: ticks exactly on measured days, labels as day number only.
-            current_ax.xaxis.set_major_locator(mdates.AutoDateLocator())
-            current_ax.xaxis.set_major_formatter(DateFormatter('J%d'))
-            plt.setp(current_ax.xaxis.get_majorticklabels(), rotation=45, ha='right', fontsize=8)
-            
-            # Grid for readability
-            current_ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
-            current_ax.set_axisbelow(True)
-            
-            # Styling
-            current_ax.spines['top'].set_visible(False)
-            current_ax.spines['right'].set_visible(False)
-            current_ax.tick_params(labelsize=8)
-    
-    # ============ GLOBAL LEGEND ============
-    # Create legend outside the subplots
-    handles, labels = ax[0, 0].get_legend_handles_labels()
-    if handles:  # Only if there are lines to legend
-        fig.legend(
-            handles, 
-            labels,
-            loc='upper center',
-            bbox_to_anchor=(0.5, 1.00),  # Above the figure
-            ncol=len(measure_col),
-            frameon=True,
-            fontsize=10,
-            title=f'Measurement Type: {measurements_type}',
-            title_fontsize=11
-        )
+                    # Grid for readability
+                    current_ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
+                    current_ax.set_axisbelow(True)
+                        
+                    # Styling
+                        
+                    current_ax.spines['top'].set_visible(False)
+                    current_ax.spines['right'].set_visible(False)
+                    current_ax.tick_params(labelsize=8)
+    if style_axes:
+        # ============ GLOBAL LEGEND ============
+        # Create legend outside the subplots
+        handles, labels = ax[0, 0].get_legend_handles_labels()
+        if handles:  # Only if there are lines to legend
+            fig.legend(
+                handles, 
+                labels,
+                loc='upper center',
+                bbox_to_anchor=(0.5, 1.00),  # Above the figure
+                ncol=len(measure_col),
+                frameon=True,
+                fontsize=10,
+                title=f'Measurement Type: {measurements_type}',
+                title_fontsize=11
+            )
 
-    # ============ LAYOUT ============
-    plt.tight_layout(rect=[0, 0, 1, 0.96])  # Leave space for global legend
+        # ============ LAYOUT ============
+        if style_axes:
+            fig.tight_layout(rect=[0, 0, 1, 0.96])  # Leave space for global legend
 
-    # ============ ADD GRID LINES to subplots ============
-    # Make subplot borders visible
-    for axes in ax.flat:
-        for spine in axes.spines.values():
-            spine.set_edgecolor('black')
-            spine.set_linewidth(1.5)
-            spine.set_visible(True)
+        # ============ ADD GRID LINES to subplots ============
+        # Make subplot borders visible
+        for axes in ax.flat:
+            for spine in axes.spines.values():
+                spine.set_edgecolor('black')
+                spine.set_linewidth(1.5)
+                spine.set_visible(True)
     
         
     # Saving figure in the corresponding folder
     if save_path:
-        plt.savefig(f'{save_path}/{filename}_{measurements_type}_plot.png')
-    else:
-        return fig, ax  # Return the figure and axes for further manipulation if needed
+        fig.savefig(f'{save_path}/{filename}_{measurements_type}_plot.png')
+    
+    return fig, ax  # Return the figure and axes for further manipulation if needed
     
 
 
@@ -420,8 +442,3 @@ def replicate_parsing(data_set, replicate_mapping):
                     Parsed_duplicates.loc[(Parsed_duplicates['Replicate_ID']==replicate) & (Parsed_duplicates['Initial_ID']==replicate_mapping.loc[replicate_mapping['Original_well_ID']==well_id, replicate_col].values[0]), ['Row_plate_name','Columns_plate_name']] = well_id[0],int(well_id[1:])
                     replicate += 1
     return Parsed_duplicates
-
-
-### Further analysis: Modelisation the combination of maximal growth rate, plateau reaching efficiency (speed to reach the palteau) and maximal value reached according to growth conditions (N, P, S sources) to predict growth behavior on other conditions and optimize media composition for growth of the strain in question
-# Note that weight in the calculation of the parameters combination will be given to optimize give parameters.
-# To search for significant differences between OD or fluorescence measurements, a function should be fitted to normalized measurements values for each well and then the functions parameters should be compared according to the range of truthfullness
